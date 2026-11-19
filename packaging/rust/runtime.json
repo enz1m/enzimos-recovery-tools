@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "component": "recovery-ui",
+  "package_name": "enzimos-rust-recovery-ui",
+  "version": "0.2.0",
+  "architecture": "x86_64",
+  "profile": "rust-candidate",
+  "automatic_activation": false,
+  "installed_qualification": false,
+  "binaries": {
+    "enzimos-recovery-auth": "usr/lib/enzimos-recovery/enzimos-recovery-auth",
+    "enzimos-recovery-backup": "usr/lib/enzimos-recovery/enzimos-recovery-backup",
+    "enzimos-recovery-cli": "usr/lib/enzimos-recovery/enzimos-recovery-cli",
+    "enzimos-recovery-helper": "usr/lib/enzimos-recovery/enzimos-recovery-helper",
+    "enzimos-recovery-open-terminal": "usr/lib/enzimos-recovery/enzimos-recovery-open-terminal",
+    "enzimos-recovery-session-state": "usr/lib/enzimos-recovery/enzimos-recovery-session-state"
+  },
+  "dependencies": [
+    "glibc",
+    "gcc-libs",
+    "openssl",
+    "pam",
+    "sudo",
+    "util-linux",
+    "systemd",
+    "polkit",
+    "dbus-broker-units",
+    "libarchive",
+    "btrfs-progs",
+    "restic",
+    "fontconfig",
+    "libxkbcommon",
+    "wayland",
+    "mesa",
+    "greetd"
+  ]
+}

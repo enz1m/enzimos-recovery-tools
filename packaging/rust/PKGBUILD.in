@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Prebuilt Rust binaries only; no install hook or service activation.
+pkgname=enzimos-rust-recovery-ui
+pkgver=0.2.0
+pkgrel=1
+pkgdesc='Native helpers for enzimOS Recovery'
+arch=('x86_64')
+license=('MIT')
+options=('!strip' '!debug')
+depends=('glibc' 'gcc-libs' 'openssl' 'pam' 'sudo' 'util-linux' 'systemd' 'polkit' 'dbus-broker-units' 'libarchive' 'btrfs-progs' 'restic' 'fontconfig' 'libxkbcommon' 'wayland' 'mesa' 'greetd')
+source=('runtime.tar' 'LICENSE')
+sha256sums=('@RUNTIME_SHA256@' '@LICENSE_SHA256@')
+package() {
+  cp -r --preserve=mode,timestamps --no-preserve=ownership "$srcdir/runtime/." "$pkgdir/"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
