@@ -87,6 +87,6 @@ pub fn restore(request: &Value) -> Result<Value> {
         eprintln!("Recovery run scheduled; boot menu refresh requires inspection: {error}");
     }
     Ok(
-        value!({"message":"Restarting to restore this snapshot. Your personal files are preserved.","run":id,"result":result}),
+        value!({"message":"Recovery is scheduled. Choose enzimOS in the firmware boot menu if another operating system starts by default.","run":id,"result":result}),
     )
 }
