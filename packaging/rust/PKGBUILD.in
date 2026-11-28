@@ -2,7 +2,7 @@
 # Prebuilt Rust binaries only; no install hook or service activation.
 pkgname=enzimos-rust-recovery-ui
 pkgver=0.2.0
-pkgrel=1
+pkgrel=3
 pkgdesc='Native helpers for enzimOS Recovery'
 arch=('x86_64')
 license=('MIT')

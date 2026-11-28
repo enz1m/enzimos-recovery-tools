@@ -7,8 +7,8 @@ license = "MIT"
 publish = false
 
 [dependencies]
-enzimos-platform = { git = "https://github.com/enz1m/enzimos-packages.git", rev = "cfe4292cf83f8987f757c4f411a646e64722003a" }
-enzimos-policy = { git = "https://github.com/enz1m/enzimos-packages.git", rev = "cfe4292cf83f8987f757c4f411a646e64722003a" }
+enzimos-platform = { git = "https://github.com/enz1m/enzimos-packages.git", rev = "9464e408f98142da5659bc97ce80173d84d1acf8" }
+enzimos-policy = { git = "https://github.com/enz1m/enzimos-packages.git", rev = "9464e408f98142da5659bc97ce80173d84d1acf8" }
 serde_json = "1"
 libc = "0.2"
 zeroize = "1"
