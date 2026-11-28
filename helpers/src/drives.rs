@@ -330,6 +330,28 @@ fn unmount(path: &Path) -> Result<()> {
 
 fn mount_source(drive: &Value, alias: &Path) -> Result<()> {
     let file = verified_device(Path::new(text(drive, "name", 255)?), drive)?;
+    let uuid = process::run_with_fds(
+        "/usr/bin/blkid",
+        &[
+            "--probe",
+            "--match-tag",
+            "UUID",
+            "--output",
+            "value",
+            "@fd:0",
+        ],
+        &[],
+        Duration::from_secs(30),
+        4096,
+        &[file.as_fd()],
+    )?;
+    let expected = text(drive, "uuid", 128)?;
+    require(
+        uuid.status.success()
+            && std::str::from_utf8(&uuid.stdout)
+                .is_ok_and(|value| value.trim().eq_ignore_ascii_case(expected)),
+        "external filesystem changed before mounting",
+    )?;
     OpenOptions::new()
         .write(true)
         .create_new(true)
