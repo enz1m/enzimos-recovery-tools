@@ -3,19 +3,21 @@
 use enzimos_platform::{Error, Result, files, json, mount_identity, process, require};
 use serde_json::{Value, json as value};
 use std::{
-    os::fd::AsFd,
+    fs::{File, OpenOptions},
+    os::{fd::AsFd, unix::fs::OpenOptionsExt},
     path::{Path, PathBuf},
     time::Duration,
 };
 pub const STATE: &str = "/run/enzimos-recovery-backup";
 pub const MEDIA: &str = "/run/enzimos-recovery-media";
+const SOURCES: &str = "/run/enzimos-recovery-backup/block-sources";
 pub fn private() -> Result<()> {
     enzimos_policy::operation::root_only()?;
     require(
         std::fs::read_link("/proc/self/ns/mnt")? == std::fs::read_link("/proc/1/ns/mnt")?,
         "initial recovery mount namespace required",
     )?;
-    for path in [STATE, MEDIA] {
+    for path in [STATE, MEDIA, SOURCES] {
         files::ensure_directory(Path::new(path), 0o700, 0)?;
     }
     Ok(())
@@ -87,6 +89,21 @@ fn flatten<'a>(v: &'a Value, depth: usize, rows: &mut Vec<&'a Value>) -> Result<
     }
     Ok(())
 }
+fn reserved_partition(row: &Value) -> bool {
+    row["parttype"].as_str().is_some_and(|kind| {
+        [
+            "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+            "21686148-6449-6e6f-744e-656564454649",
+            "e3c9e316-0b5c-4db8-817d-f92df00215ae",
+            "de94bba4-06d1-4d40-a16a-bfd50179d6ac",
+            "0xef",
+            "0x27",
+        ]
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(kind))
+    })
+}
+
 pub fn parse(v: &Value) -> Result<Value> {
     json::fields(v, "blockdevices")?;
     let disks = v["blockdevices"]
@@ -112,9 +129,16 @@ pub fn parse(v: &Value) -> Result<Value> {
         for row in &rows {
             if mountpoints(row)?.iter().any(|m| {
                 *m == "/"
-                    || ["/home", "/boot", "/etc", "/var"]
-                        .iter()
-                        .any(|b| m.starts_with(b))
+                    || [
+                        "/home",
+                        "/boot",
+                        "/etc",
+                        "/var",
+                        "/run/enzimos-live/",
+                        "/run/archiso/",
+                    ]
+                    .iter()
+                    .any(|b| m.starts_with(b))
             }) {
                 system = true;
             }
@@ -122,8 +146,13 @@ pub fn parse(v: &Value) -> Result<Value> {
         if system {
             continue;
         }
+        let Some(sequence) = disk["disk-seq"].as_u64().filter(|sequence| *sequence > 0) else {
+            continue;
+        };
         for row in rows {
-            if !matches!(row["type"].as_str(), Some("disk" | "part"))
+            if reserved_partition(row)
+                || row.get("children").is_some()
+                || !matches!(row["type"].as_str(), Some("disk" | "part"))
                 || !matches!(
                     row["fstype"].as_str(),
                     Some("ext4" | "exfat" | "vfat" | "ntfs" | "ntfs3")
@@ -165,7 +194,7 @@ pub fn parse(v: &Value) -> Result<Value> {
                 .as_u64()
                 .filter(|s| *s > 0)
                 .ok_or_else(|| Error("drive size type".into()))?;
-            let identity = value!({"name":name,"maj:min":device,"uuid":uuid,"fstype":text(row,"fstype",16)?,"size":size,"disk":text(disk,"name",255)?,"serial":optional_text(disk,"serial",256)?,"model":optional_text(disk,"model",256)?});
+            let identity = value!({"name":name,"maj:min":device,"disk_sequence":sequence,"uuid":uuid,"fstype":text(row,"fstype",16)?,"size":size,"disk":text(disk,"name",255)?,"serial":optional_text(disk,"serial",256)?,"model":optional_text(disk,"model",256)?});
             let id = json::fingerprint(&identity)?;
             require(seen.insert(id.clone()), "duplicate external drive identity")?;
             let mount = format!("{MEDIA}/{id}");
@@ -204,14 +233,42 @@ pub fn query() -> Result<Value> {
             "-b",
             "-p",
             "-o",
-            "NAME,TYPE,TRAN,RM,FSTYPE,UUID,SIZE,LABEL,MOUNTPOINTS,RO,MAJ:MIN,SERIAL,MODEL",
+            "NAME,TYPE,TRAN,RM,FSTYPE,UUID,SIZE,LABEL,MOUNTPOINTS,RO,MAJ:MIN,SERIAL,MODEL,DISK-SEQ,PARTTYPE",
         ],
         &[],
         Duration::from_secs(30),
         2 * 1024 * 1024,
     )?;
     require(result.status.success(), "drive inventory unavailable")?;
-    parse(&json::decode(&result.stdout, 2 * 1024 * 1024)?)
+    let mut drives = parse(&json::decode(&result.stdout, 2 * 1024 * 1024)?)?;
+    for drive in drives.as_array_mut().unwrap() {
+        let id = drive["id"].as_str().unwrap();
+        let alias = Path::new(SOURCES).join(id);
+        if drive["mounted"] != true && drive["reason"] == "" && alias.exists() {
+            let path = Path::new(MEDIA).join(id);
+            let result = process::run(
+                "/usr/bin/findmnt",
+                &[
+                    "--noheadings",
+                    "--raw",
+                    "--output",
+                    "SOURCE",
+                    "--mountpoint",
+                    path.to_str().unwrap(),
+                ],
+                &[],
+                Duration::from_secs(10),
+                4096,
+            )?;
+            if result.status.success()
+                && result.stdout.strip_suffix(b"\n") == Some(alias.as_os_str().as_encoded_bytes())
+            {
+                verified_device(&alias, drive)?;
+                drive["mounted"] = value!(true);
+            }
+        }
+    }
+    Ok(drives)
 }
 pub fn selected(id: &str) -> Result<Value> {
     require(
@@ -238,6 +295,84 @@ pub fn selected(id: &str) -> Result<Value> {
     )?;
     Ok(selected[0].clone())
 }
+fn device_matches(block: &Value, drive: &Value) -> bool {
+    block["major"]
+        .as_u64()
+        .zip(block["minor"].as_u64())
+        .is_some_and(|(major, minor)| drive["maj:min"] == format!("{major}:{minor}"))
+        && block["disk_sequence"] == drive["disk_sequence"]
+        && block["bytes"] == drive["size"]
+        && block["read_only"] == false
+}
+
+fn verified_device(path: &Path, drive: &Value) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    require(
+        device_matches(&enzimos_policy::block::observe(file.as_fd())?, drive),
+        "external drive changed before mounting",
+    )?;
+    Ok(file)
+}
+
+fn unmount(path: &Path) -> Result<()> {
+    let result = process::run(
+        "/usr/bin/umount",
+        &["--", path.to_str().unwrap()],
+        &[],
+        Duration::from_secs(30),
+        65536,
+    )?;
+    require(result.status.success(), "external volume is still in use")
+}
+
+fn mount_source(drive: &Value, alias: &Path) -> Result<()> {
+    let file = verified_device(Path::new(text(drive, "name", 255)?), drive)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(alias)?;
+    // NTFS-3G canonicalizes its input. A private bind mount retains the selected device node.
+    let result = process::run_with_fds(
+        "/usr/bin/mount",
+        &[
+            "--no-canonicalize",
+            "--bind",
+            "@fd:0",
+            alias.to_str().unwrap(),
+        ],
+        &[],
+        Duration::from_secs(30),
+        65536,
+        &[file.as_fd()],
+    );
+    match result {
+        Ok(output) if output.status.success() => {
+            if let Err(error) = verified_device(alias, drive) {
+                release_source(alias)?;
+                return Err(error);
+            }
+            Ok(())
+        }
+        result => {
+            std::fs::remove_file(alias)?;
+            result?;
+            Err(Error(
+                "could not retain the selected external block device".into(),
+            ))
+        }
+    }
+}
+
+fn release_source(alias: &Path) -> Result<()> {
+    unmount(alias)?;
+    std::fs::remove_file(alias)?;
+    Ok(())
+}
+
 pub struct Pinned {
     pub drive: Value,
     pub path: PathBuf,
@@ -280,6 +415,8 @@ impl Pinned {
             } else {
                 fstype
             };
+            let alias = Path::new(SOURCES).join(id);
+            mount_source(&d, &alias)?;
             let result = process::run(
                 "/usr/bin/mount",
                 &[
@@ -288,14 +425,18 @@ impl Pinned {
                     "-o",
                     &options,
                     "--",
-                    text(&d, "name", 255)?,
+                    alias.to_str().unwrap(),
                     path.to_str().unwrap(),
                 ],
                 &[],
                 Duration::from_secs(30),
                 65536,
-            )?;
-            require(result.status.success(), "external volume mount failed")?;
+            );
+            if !result.as_ref().is_ok_and(|output| output.status.success()) {
+                release_source(&alias)?;
+                result?;
+                return Err(Error("external volume mount failed".into()));
+            }
         }
         let fresh = selected(id)?;
         require(
@@ -338,14 +479,26 @@ impl Pinned {
     pub fn eject(self) -> Result<Value> {
         self.check()?;
         drop(self.directory);
-        let result = process::run(
-            "/usr/bin/umount",
-            &["--", self.path.to_str().unwrap()],
-            &[],
-            Duration::from_secs(30),
-            65536,
-        )?;
-        require(result.status.success(), "external volume is still in use")?;
+        unmount(&self.path)?;
+        let alias = Path::new(SOURCES).join(self.drive["id"].as_str().unwrap());
+        if alias.exists() {
+            release_source(&alias)?;
+        }
         Ok(value!({"ejected":true}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reused_device_number_cannot_mount_for_the_previous_drive() {
+        let drive = value!({"maj:min":"8:33","disk_sequence":9,"size":900000000});
+        let mut block =
+            value!({"major":8,"minor":33,"disk_sequence":9,"bytes":900000000,"read_only":false});
+        assert!(device_matches(&block, &drive));
+        block["disk_sequence"] = value!(10);
+        assert!(!device_matches(&block, &drive));
     }
 }
